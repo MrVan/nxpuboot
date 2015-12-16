@@ -253,7 +253,11 @@ struct i2c_pads_info i2c_pad_info1 = {
 
 int dram_init(void)
 {
+#ifdef CONFIG_ARMV7_TEE
+	gd->ram_size = PHYS_SDRAM_SIZE - CONFIG_TEE_RAM_SIZE;
+#else
 	gd->ram_size = PHYS_SDRAM_SIZE;
+#endif
 
 	return 0;
 }

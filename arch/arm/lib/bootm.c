@@ -307,8 +307,17 @@ static void boot_jump_linux(bootm_headers_t *images, int flag)
 #if defined(CONFIG_ARMV7_NONSEC) || defined(CONFIG_ARMV7_VIRT)
 		if (armv7_boot_nonsec()) {
 			armv7_init_nonsec();
+#if defined(CONFIG_ARMV7_TEE)
+			/*
+			 * Optee os will reopen cache, so cleanup again
+			 * before boot into linux
+			 */
+			cleanup_before_linux();
+			kernel_entry(0, machid, r2);
+#else
 			secure_ram_addr(_do_nonsec_entry)(kernel_entry,
 							  0, machid, r2);
+#endif
 		} else
 #endif
 			kernel_entry(0, machid, r2);

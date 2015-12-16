@@ -11,6 +11,12 @@
 #include <asm/gic.h>
 #include <asm/armv7.h>
 #include <asm/proc-armv/ptrace.h>
+#ifdef CONFIG_ARMV7_TEE
+#ifndef CONFIG_OPTEE_ENTRY
+#error "error optee entry"
+#endif
+#define OPTEE_ENTRY CONFIG_OPTEE_ENTRY
+#endif
 
 .arch_extension sec
 .arch_extension virt
@@ -18,6 +24,26 @@
 	.pushsection ._secure.text, "ax"
 
 	.align	5
+/* Ugly code which can only boot smp 2 cores, enough for 7d */
+_regs_save:
+	.word 0
+	.word 0
+	.word 0
+	.word 0
+	.word 0
+	.word 0
+	.word 0
+	.word 0
+	.word 0
+	.word 0
+	.word 0
+	.word 0
+	.word 0
+	.word 0
+	.word 0
+/* Maybe we can use cpu sync in optee os, but not in uboot */
+_cpu_sync:
+	.word 0
 /* the vector table for secure state and HYP mode */
 _monitor_vectors:
 	.word 0	/* reset */
@@ -113,6 +139,16 @@ ENDPROC(_do_nonsec_entry)
 	add	\addr, \addr, \tmp
 .endm
 
+.macro get_core_pos reg, tmp
+#define MPIDR_CPU_MASK          0xff
+#define MPIDR_CLUSTER_SHIFT     8
+#define MPIDR_CLUSTER_MASK      (0xff << MPIDR_CLUSTER_SHIFT)
+	mrc     p15, 0, \reg, c0, c0, 5
+	and     \tmp, \reg, #MPIDR_CPU_MASK
+	and     \reg, \reg, #MPIDR_CLUSTER_MASK
+	add     \reg, \tmp, \reg, LSR #6
+.endm
+
 #ifndef CONFIG_ARMV7_PSCI
 /*
  * Secondary CPUs start here and call the code for the core specific parts
@@ -121,8 +157,25 @@ ENDPROC(_do_nonsec_entry)
  * Then they go back to wfi and wait to be woken up by the kernel again.
  */
 ENTRY(_smp_pen)
+	/* Remove this in future */
+	ldr sp, =0x80001000
 	cpsid	i
 	cpsid	f
+
+	/* Ugly sync code, use cpu sync in optee os in future */
+wait_cpu0:
+	dsb
+	adr	r0, _cpu_sync
+	ldr	r1, [r0]
+	ldr	r2, =0x55555555
+	cmp	r1, r2
+	bne	wait_cpu0
+
+	adr	r0, _cpu_sync
+	ldr	r1, =0xaaaabbbb
+	str	r1, [r0]
+
+	dsb
 
 	bl	_nonsec_init
 
@@ -177,12 +230,54 @@ ENTRY(_nonsec_init)
 	mcreq	p15, 0, r1, c14, c0, 0		@ write CNTFRQ
 #endif
 
+#ifdef CONFIG_ARMV7_TEE
+	isb
+
+	mov	ip, r0
+	adr	r0, _regs_save
+	str	ip, [r0]
+	add	r0, r0, #4
+
+	str	sp, [r0]
+	add	r0, r0, #4
+
+	stmia	r0!, {r1-r12}
+
+	str	lr, [r0]
+	adr	lr, end_init_optee
+
+	ldr	r0, =OPTEE_ENTRY
+	movs	pc, r0
+	b	.
+end_init_optee:
+#if 0
+	b end_init_optee			@for test use
+#endif
+	adr	lr, _regs_save
+	ldr	r0, [lr]
+	add	lr, lr, #4
+
+	ldr	sp, [lr]
+	add	lr, lr, #4
+	
+	ldmfd	lr!, {r1-r12}
+	ldr	lr, [lr]
+
+	adr	r0, _cpu_sync
+	ldr	r1, =0x55555555
+	str	r1, [r0]
+
+	dsb
+
+	bx	lr
+#else
 	adr	r1, _monitor_vectors
 	mcr	p15, 0, r1, c12, c0, 1		@ set MVBAR to secure vectors
 	isb
 
 	mov	r0, r3				@ return GICC address
 	bx	lr
+#endif
 ENDPROC(_nonsec_init)
 
 #ifdef CONFIG_SMP_PEN_ADDR
@@ -197,7 +292,13 @@ ENTRY(smp_waitloop)
 	cmp	r0, r1			@ make sure we dont execute this code
 	beq	smp_waitloop		@ again (due to a spurious wakeup)
 	mov	r0, r1
+#ifdef CONFIG_ARMV7_TEE
+	mrs	r1, cpsr
+	msr	spsr, r1
+	movs	pc, r0
+#else
 	b	_do_nonsec_entry
+#endif
 ENDPROC(smp_waitloop)
 .weak smp_waitloop
 #endif
